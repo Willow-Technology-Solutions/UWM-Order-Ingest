@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Pulled API data
+data/
+
+# Local workbooks, exports, logs, and research data
+*.xls
+*.xlsx
+*.csv
+*.html
+archive/
+exports/
+logs/
+research/
+~$*
+.DS_Store
+
+# PyInstaller spec generated during local builds
+*.spec

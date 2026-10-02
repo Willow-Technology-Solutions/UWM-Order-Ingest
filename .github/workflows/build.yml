@@ -1,0 +1,89 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      UV_PYTHON: '3.13'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v9
+
+      - name: Install build dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked --group build
+
+      - name: Build one-directory executable
+        run: >-
+          uv run --locked --group build pyinstaller --noconfirm --clean --onedir
+          --name UWMOrderIngest
+          --hidden-import win32timezone
+          main.py
+
+      - name: Check executable starts
+        shell: pwsh
+        run: |
+          Copy-Item .env.example dist/UWMOrderIngest/.env
+          try {
+            & dist/UWMOrderIngest/UWMOrderIngest.exe --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item dist/UWMOrderIngest/.env
+          }
+
+      - name: Check runtime secrets are absent
+        shell: pwsh
+        run: |
+          if (Test-Path dist/UWMOrderIngest/.env) { throw 'Runtime .env was included in the build' }
+
+      - name: Include configuration template
+        shell: pwsh
+        run: Copy-Item .env.example dist/UWMOrderIngest/.env.example
+
+      - name: Package complete folder
+        shell: pwsh
+        run: Compress-Archive -Path dist/UWMOrderIngest -DestinationPath UWMOrderIngest-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UWMOrderIngest-Windows
+          path: UWMOrderIngest-Windows.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: UWMOrderIngest-Windows
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" UWMOrderIngest-Windows.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" UWMOrderIngest-Windows.zip --generate-notes
+          fi

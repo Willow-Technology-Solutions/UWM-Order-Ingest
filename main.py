@@ -25,7 +25,7 @@ from helpers import (
     sendSuccessHealthcheck,
 )
 from logger import setupLogger
-from mvp import (
+from dwelling_blocks import (
     VIEW_FILTERS,
     DwellingBlocksClient,
     assignment_to_erp_row,

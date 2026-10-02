@@ -1,0 +1,17 @@
+[project]
+name = "dwelling-blocks"
+version = "0.1.0"
+description = "Pull vendor assignments from the Dwelling Blocks Vendor API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.2.3",
+    "requests>=2.34.2",
+    "sentry-sdk>=2.0.0",
+    "tzdata>=2025.2",
+    "pywin32>=311; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+build = ["pyinstaller>=6,<7"]
