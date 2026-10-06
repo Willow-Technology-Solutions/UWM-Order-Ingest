@@ -602,7 +602,7 @@ def assignmentToErpRow(
     fha_case = item.get("fhaCaseNumber") or item.get("fhaNumber")
 
     values = {
-        "ID": None,  # assigned when appending to the workbook
+        "ID": None,  # loan number + COMPANY_ID, assigned when appending
         "File Name": _buildErpFileName(street_number, street_address),
         "Assignee": assignee,
         "Report Type": item.get("reportType"),

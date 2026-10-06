@@ -364,6 +364,8 @@ def processOrdersFile(
     Append exported ERP rows to the automation workbook, matching existing cell formatting.
 
     Skips loans already present in GSG Connect for COMPANY_ID.
+    Each new row ID is the loan number with COMPANY_ID appended, so the same
+    order keeps the same ID if it is written again.
 
     Returns:
         tuple[int, list]: Number of new orders added and their loan numbers
@@ -380,6 +382,12 @@ def processOrdersFile(
     if not COMPANY_ID:
         logger.error(
             "COMPANY_ID is not set; unable to dedupe against past orders. "
+            "Skipping order processing."
+        )
+        return 0, []
+    if _companyIdDigits(COMPANY_ID) is None:
+        logger.error(
+            "COMPANY_ID has no digits; unable to build stable row IDs. "
             "Skipping order processing."
         )
         return 0, []
@@ -430,7 +438,6 @@ def processOrdersFile(
             fallback_row_index=template_row_index,
         )
 
-        next_row_id = _nextAutomationRowId()
         added_loan_numbers: list[Any] = []
         added_count = 0
 
@@ -447,8 +454,7 @@ def processOrdersFile(
                 outgoing[blank_column] = None
 
             if not outgoing.get("ID"):
-                outgoing["ID"] = next_row_id
-                next_row_id += 1
+                outgoing["ID"] = _buildAutomationRowId(loan_number, COMPANY_ID)
 
             if not outgoing.get("File Name"):
                 outgoing["File Name"] = _buildFileName(outgoing)
@@ -611,9 +617,21 @@ def _loanCompanyPairsFromPastOrdersPayload(
     return pairs
 
 
-def _nextAutomationRowId() -> int:
-    """Generate an ID in the recent workbook style: DDMMYYHHMMSS."""
-    return int(datetime.now().strftime("%d%m%y%H%M%S"))
+def _companyIdDigits(company_id: str) -> str | None:
+    """Return the digit characters of a company id, matching Encompass client ids."""
+    digits = re.sub(r"\D", "", company_id.strip())
+    return digits or None
+
+
+def _buildAutomationRowId(loan_number: int, company_id: str) -> int:
+    """Stable workbook ID: loan number with the company id appended.
+
+    Same formula as Encompass ``{loan_number}{client_id}``.
+    """
+    company_digits = _companyIdDigits(company_id)
+    if not company_digits:
+        raise ValueError("COMPANY_ID has no digits")
+    return int(f"{loan_number}{company_digits}")
 
 
 def _buildFileName(row: dict[str, Any]) -> str:
