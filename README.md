@@ -84,7 +84,7 @@ uv run python main.py --service restart
 uv run python main.py --service remove
 ```
 
-The service name is `UWMOrderIngest`. Starting `main.py` with no arguments on Windows tries to run as the installed service. Use `--once` or `--service` there.
+The service name is `DEAUWMOrderIngest`. Windows shows it as DEA UWM Order Ingest. Starting `main.py` with no arguments on Windows tries to run as the installed service. Use `--once` or `--service` there.
 
 ## Building the executable
 

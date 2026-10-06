@@ -180,8 +180,8 @@ def build_python_service_class():
     _, win32service, win32serviceutil = import_pywin32_modules()
 
     class PythonService(win32serviceutil.ServiceFramework):
-        _svc_name_ = "UWMOrderIngest"
-        _svc_display_name_ = "UWM Order Ingest"
+        _svc_name_ = "DEAUWMOrderIngest"
+        _svc_display_name_ = "DEA UWM Order Ingest"
         _svc_description_ = (
             "Pulls Dwelling Blocks assignments into ERP PDF Automation.xlsx "
             "on a recurring interval."
@@ -198,14 +198,14 @@ def build_python_service_class():
         def SvcDoRun(self):
             try:
                 self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-                log_service_info("UWM Order Ingest service started.")
+                log_service_info("DEA UWM Order Ingest service started.")
                 run_main_loop(stop_event=self.stop_event)
             except Exception:
-                log_service_error("UWM Order Ingest service runtime failed.")
+                log_service_error("DEA UWM Order Ingest service runtime failed.")
                 logger.exception("Service runtime failed")
                 raise
             finally:
-                log_service_info("UWM Order Ingest service stopped.")
+                log_service_info("DEA UWM Order Ingest service stopped.")
 
     return PythonService
 
@@ -221,7 +221,7 @@ def run_service_command(service_command: str) -> int:
 def parse_args(argv: list[str]):
     """Parse CLI options and optional Windows service management commands."""
     parser = argparse.ArgumentParser(
-        description="UWM Order Ingest host."
+        description="DEA UWM Order Ingest host."
     )
     parser.add_argument(
         "--once",
