@@ -56,8 +56,8 @@ elif sentry_dsn:
 else:
     logger.warning("SENTRY_DSN not set, Sentry error tracking is disabled")
 
-SCRIPT_EXEC_INTERVAL_SECONDS = int(os.getenv("SCRIPT_EXEC_INTERVAL_SECONDS", "300"))
-DEFAULT_PAGE_SIZE = int(os.getenv("DEFAULT_PAGE_SIZE", "100"))
+SCRIPT_EXEC_INTERVAL_SECONDS = int(os.getenv("SCRIPT_EXEC_INTERVAL_SECONDS") or "300")
+DEFAULT_PAGE_SIZE = int(os.getenv("DEFAULT_PAGE_SIZE") or "100")
 
 
 def import_pywin32_modules():
