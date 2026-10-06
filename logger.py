@@ -13,8 +13,19 @@ def _getBaseDirectory():
     return Path(__file__).resolve().parent
 
 
-BASE_DIR = os.fspath(_getBaseDirectory())
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
+def _cleanEnvPath(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text
+
+
+def resolveLogDirectory() -> str:
+    """Return LOGGING_LOCATION when set, otherwise the local logs directory."""
+    logging_location = _cleanEnvPath(os.getenv("LOGGING_LOCATION", ""))
+    if logging_location:
+        return logging_location
+    return os.path.join(os.fspath(_getBaseDirectory()), "logs")
 
 
 def setupLogger():
@@ -30,8 +41,9 @@ def setupLogger():
         stdoutHandler.setFormatter(formatter)
         logger.addHandler(stdoutHandler)
 
-        os.makedirs(LOGS_DIR, exist_ok=True)
-        log_file = os.path.join(LOGS_DIR, "log.txt")
+        log_directory = resolveLogDirectory()
+        os.makedirs(log_directory, exist_ok=True)
+        log_file = os.path.join(log_directory, "log.txt")
         logFileHandler = RotatingFileHandler(
             log_file,
             maxBytes=10000000,  # 10mb
@@ -40,5 +52,6 @@ def setupLogger():
         logFileHandler.setLevel(logging.DEBUG)
         logFileHandler.setFormatter(formatter)
         logger.addHandler(logFileHandler)
+        logger.info("Writing logs to %s", log_file)
 
     return logger

@@ -1,11 +1,11 @@
-"""Dwelling Blocks API client and ERP row mapping used by main.py.
+"""Dwelling Blocks API client and ERP row mapping.
 
 Auth: POST /auth/token with client_id + client_secret from .env
 List: GET /vendors/orders
-Search: POST /vendors/orders/search  (used by the app UI / CSV export)
-Detail: GET /vendors/orders/{orderAssignmentId}  (contacts, properties)
+Search: POST /vendors/orders/search
+Detail: GET /vendors/orders/{orderAssignmentId} for contacts and properties
 
-Docs confirm ContactType has Borrower / AccessContact / etc. — no CoBorrower.
+ContactType includes Borrower and AccessContact. There is no CoBorrower type.
 Extra borrowers are additional contacts with contactType == "Borrower".
 
 Docs:
@@ -21,6 +21,8 @@ import re
 from typing import Any, Iterator
 
 import requests
+
+from helpers import DNS_SERVER, _createDnsPinnedSession
 
 API_BASE = "https://api.dwellingblocks.com"
 DEFAULT_PAGE_SIZE = 100
@@ -54,9 +56,9 @@ class DwellingBlocksClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._access_token: str | None = None
-        self._session = requests.Session()
+        self._session = _createDnsPinnedSession(dns_server=DNS_SERVER)
 
-    def get_access_token(self, *, force: bool = False) -> str:
+    def getAccessToken(self, *, force: bool = False) -> str:
         if self._access_token and not force:
             return self._access_token
 
@@ -77,23 +79,23 @@ class DwellingBlocksClient:
         self._access_token = token
         return token
 
-    def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.get_access_token()}"}
+    def _authHeaders(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.getAccessToken()}"}
 
-    def get_vendor_orders_page(
+    def getVendorOrdersPage(
         self, *, offset: int = 0, num_results: int = DEFAULT_PAGE_SIZE
     ) -> dict[str, Any]:
         """GET /vendors/orders — list of order assignments."""
         response = self._session.get(
             f"{self.base_url}/vendors/orders",
-            headers=self._auth_headers(),
+            headers=self._authHeaders(),
             params={"offset": offset, "numResults": num_results},
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def search_vendor_orders_page(
+    def searchVendorOrdersPage(
         self,
         *,
         offset: int = 0,
@@ -120,37 +122,37 @@ class DwellingBlocksClient:
 
         response = self._session.post(
             f"{self.base_url}/vendors/orders/search",
-            headers={**self._auth_headers(), "Content-Type": "application/json"},
+            headers={**self._authHeaders(), "Content-Type": "application/json"},
             json=body,
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def get_vendor_order(self, order_assignment_id: int) -> dict[str, Any]:
+    def getVendorOrder(self, order_assignment_id: int) -> dict[str, Any]:
         """GET /vendors/orders/{orderAssignmentId} — assigned order details."""
         response = self._session.get(
             f"{self.base_url}/vendors/orders/{order_assignment_id}",
-            headers=self._auth_headers(),
+            headers=self._authHeaders(),
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def get_vendor_order_transfers(
+    def getVendorOrderTransfers(
         self, order_assignment_id: int
     ) -> list[dict[str, Any]]:
         """GET /vendors/orders/{orderAssignmentId}/transfers — payout transfers."""
         response = self._session.get(
             f"{self.base_url}/vendors/orders/{order_assignment_id}/transfers",
-            headers=self._auth_headers(),
+            headers=self._authHeaders(),
             timeout=self.timeout,
         )
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, list) else []
 
-    def iter_vendor_orders(
+    def iterVendorOrders(
         self,
         *,
         page_size: int = DEFAULT_PAGE_SIZE,
@@ -172,7 +174,7 @@ class DwellingBlocksClient:
 
             num_results = page_size if remaining is None else min(page_size, remaining)
             if use_search:
-                page = self.search_vendor_orders_page(
+                page = self.searchVendorOrdersPage(
                     offset=offset,
                     num_results=num_results,
                     query=query,
@@ -181,7 +183,7 @@ class DwellingBlocksClient:
                     filters=filters,
                 )
             else:
-                page = self.get_vendor_orders_page(
+                page = self.getVendorOrdersPage(
                     offset=offset, num_results=num_results
                 )
 
@@ -203,7 +205,7 @@ class DwellingBlocksClient:
                 break
 
 
-def contacts_of_type(
+def contactsOfType(
     contacts: list[dict[str, Any]] | None,
     contact_type: str,
     *,
@@ -220,7 +222,7 @@ def contacts_of_type(
     return matched
 
 
-def property_value_by_label(
+def propertyValueByLabel(
     properties: list[dict[str, Any]] | None, label: str
 ) -> str | None:
     for prop in properties or []:
@@ -233,7 +235,7 @@ def property_value_by_label(
     return None
 
 
-def vendor_payout_cents(transfers: list[dict[str, Any]] | None) -> int | None:
+def vendorPayoutCents(transfers: list[dict[str, Any]] | None) -> int | None:
     """Sum Vendor-type transfer totals (API amounts are integer cents)."""
     cents = 0
     found = False
@@ -250,7 +252,7 @@ def vendor_payout_cents(transfers: list[dict[str, Any]] | None) -> int | None:
     return cents if found else None
 
 
-def format_cents_as_dollars(cents: int | None) -> str | None:
+def formatCentsAsDollars(cents: int | None) -> str | None:
     if cents is None:
         return None
     return f"{cents / 100:.2f}"
@@ -336,20 +338,20 @@ _STREET_NUMBER_RE = re.compile(
 )
 
 
-def _normalize_direction_token(token: str) -> str | None:
+def _normalizeDirectionToken(token: str) -> str | None:
     key = token.strip().lower().rstrip(".")
     if key.endswith(".") and key[:-1] in _DIRECTION_ALIASES:
         key = key[:-1]
     return _DIRECTION_ALIASES.get(token.strip().lower()) or _DIRECTION_ALIASES.get(key)
 
 
-def _is_street_suffix_only(tokens: list[str]) -> bool:
+def _isStreetSuffixOnly(tokens: list[str]) -> bool:
     if len(tokens) != 1:
         return False
     return tokens[0].lower().rstrip(".") in _STREET_SUFFIXES
 
 
-def parse_us_street_address(
+def parseUsStreetAddress(
     address1: str | None, address2: str | None = None
 ) -> dict[str, str | None]:
     """Split Dwelling Blocks address1/address2 into ERP street columns.
@@ -380,16 +382,16 @@ def parse_us_street_address(
         remainder = match.group("rest").strip()
         tokens = remainder.split()
         if tokens:
-            pre_dir = _normalize_direction_token(tokens[0])
+            pre_dir = _normalizeDirectionToken(tokens[0])
             leftover = tokens[1:]
-            if pre_dir and leftover and not _is_street_suffix_only(leftover):
+            if pre_dir and leftover and not _isStreetSuffixOnly(leftover):
                 # Pre-directional: "South Home Avenue" / "N Washington St"
                 direction = pre_dir
                 street_address = " ".join(leftover).strip() or None
             else:
                 # No pre-direction; check post-directional last token.
                 post_dir = (
-                    _normalize_direction_token(tokens[-1]) if len(tokens) > 1 else None
+                    _normalizeDirectionToken(tokens[-1]) if len(tokens) > 1 else None
                 )
                 if post_dir:
                     direction = post_dir
@@ -402,9 +404,9 @@ def parse_us_street_address(
         # No leading number — keep full line as street name.
         tokens = raw.split()
         if len(tokens) > 1:
-            pre_dir = _normalize_direction_token(tokens[0])
+            pre_dir = _normalizeDirectionToken(tokens[0])
             leftover = tokens[1:]
-            if pre_dir and leftover and not _is_street_suffix_only(leftover):
+            if pre_dir and leftover and not _isStreetSuffixOnly(leftover):
                 direction = pre_dir
                 street_address = " ".join(leftover).strip() or None
 
@@ -416,7 +418,7 @@ def parse_us_street_address(
     }
 
 
-def enrich_assignment_with_detail(
+def enrichAssignmentWithDetail(
     client: DwellingBlocksClient, item: dict[str, Any]
 ) -> dict[str, Any]:
     """Merge list item with detail: all Borrowers, access contacts, key properties.
@@ -431,19 +433,19 @@ def enrich_assignment_with_detail(
     if assignment_id is None:
         raise ValueError(f"Assignment item missing id: {item}")
 
-    detail = client.get_vendor_order(int(assignment_id))
-    transfers = client.get_vendor_order_transfers(int(assignment_id))
+    detail = client.getVendorOrder(int(assignment_id))
+    transfers = client.getVendorOrderTransfers(int(assignment_id))
     contacts = detail.get("contacts") or []
     # Primary borrower = highest contact id; co-borrower = next (descending).
-    borrowers = contacts_of_type(contacts, "Borrower", sort_by_id_desc=True)
-    access_contacts = contacts_of_type(contacts, "AccessContact", sort_by_id_desc=True)
+    borrowers = contactsOfType(contacts, "Borrower", sort_by_id_desc=True)
+    access_contacts = contactsOfType(contacts, "AccessContact", sort_by_id_desc=True)
     properties = detail.get("properties") or []
 
     primary = borrowers[0] if borrowers else None
     co_borrower = borrowers[1] if len(borrowers) > 1 else None
     access = access_contacts[0] if access_contacts else None
-    payout_cents = vendor_payout_cents(transfers)
-    address_parts = parse_us_street_address(
+    payout_cents = vendorPayoutCents(transfers)
+    address_parts = parseUsStreetAddress(
         detail.get("address1") if detail.get("address1") is not None else item.get("address1"),
         detail.get("address2") if detail.get("address2") is not None else item.get("address2"),
     )
@@ -466,13 +468,13 @@ def enrich_assignment_with_detail(
         "accessContactName": (access or {}).get("name"),
         "accessContactPhone": (access or {}).get("phoneNumber"),
         "accessContactEmail": (access or {}).get("email"),
-        "loanType": property_value_by_label(properties, "Loan Type"),
-        "propertyType": property_value_by_label(properties, "Property Type"),
-        "appraisalPurpose": property_value_by_label(properties, "Appraisal Purpose"),
+        "loanType": propertyValueByLabel(properties, "Loan Type"),
+        "propertyType": propertyValueByLabel(properties, "Property Type"),
+        "appraisalPurpose": propertyValueByLabel(properties, "Appraisal Purpose"),
         "fhaCaseNumber": detail.get("fhaCaseNumber") or item.get("fhaNumber"),
         "orderSourceName": detail.get("orderSourceName"),
         "totalPayoutCents": payout_cents,
-        "totalPayoutAmount": format_cents_as_dollars(payout_cents),
+        "totalPayoutAmount": formatCentsAsDollars(payout_cents),
         "streetNumber": address_parts["streetNumber"],
         "direction": address_parts["direction"],
         "unit": address_parts["unit"],
@@ -481,7 +483,7 @@ def enrich_assignment_with_detail(
     return enriched
 
 
-def load_credentials() -> tuple[str, str]:
+def loadCredentials() -> tuple[str, str]:
     client_id = os.getenv("DWELLING_BLOCKS_CLIENT_ID", "").strip()
     client_secret = os.getenv("DWELLING_BLOCKS_CLIENT_SECRET", "").strip()
     if not client_id or not client_secret:
@@ -529,7 +531,7 @@ ERP_COLUMNS = (
 )
 
 
-def load_erp_columns() -> list[str]:
+def loadErpColumns() -> list[str]:
     """Return the ERP output headers in workbook order."""
     return list(ERP_COLUMNS)
 
@@ -544,7 +546,7 @@ def _cell(value: Any) -> str:
     return text
 
 
-def _normalize_country(value: Any) -> str | None:
+def _normalizeCountry(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
@@ -555,7 +557,7 @@ def _normalize_country(value: Any) -> str | None:
     return text
 
 
-def _build_erp_file_name(
+def _buildErpFileName(
     street_number: Any, street_address: Any
 ) -> str | None:
     number = str(street_number or "").strip()
@@ -567,11 +569,11 @@ def _build_erp_file_name(
     return None
 
 
-def assignment_to_erp_row(
+def assignmentToErpRow(
     item: dict[str, Any], columns: list[str] | None = None
 ) -> dict[str, str]:
     """Map an enriched assignment to ERP fields; unknowns stay blank."""
-    columns = columns or load_erp_columns()
+    columns = columns or loadErpColumns()
 
     assignee = item.get("assignedVendorName")
     if not assignee:
@@ -584,7 +586,7 @@ def assignment_to_erp_row(
             assignee = detail_assignee
 
     if item.get("streetNumber") is None and item.get("streetAddress") is None:
-        address_parts = parse_us_street_address(
+        address_parts = parseUsStreetAddress(
             item.get("address1"), item.get("address2")
         )
     else:
@@ -601,7 +603,7 @@ def assignment_to_erp_row(
 
     values = {
         "ID": None,  # assigned when appending to the workbook
-        "File Name": _build_erp_file_name(street_number, street_address),
+        "File Name": _buildErpFileName(street_number, street_address),
         "Assignee": assignee,
         "Report Type": item.get("reportType"),
         "Loan Type": item.get("loanType"),
@@ -620,7 +622,7 @@ def assignment_to_erp_row(
         "City": item.get("city"),
         "State": item.get("state"),
         "Zip": item.get("zipCode"),
-        "Country": _normalize_country(item.get("country")),
+        "Country": _normalizeCountry(item.get("country")),
         "Borrower's Name": item.get("borrowerName"),
         "Borrower's Phone Number": item.get("borrowerPhone"),
         "Borrower's Email Address": item.get("borrowerEmail"),

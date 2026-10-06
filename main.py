@@ -1,5 +1,5 @@
 """
-Dwelling Blocks Order Ingest Script
+UWM Order Ingest Script
 
 Pull vendor assignments from the Dwelling Blocks Vendor API and append new rows
 to the ERP PDF Automation workbook, matching existing Excel table formatting.
@@ -14,27 +14,17 @@ import sys
 import threading
 import time
 
-from dotenv import load_dotenv
-
 from helpers import (
-    appendErpRows,
     backupAutomationWorkbook,
     cleanupOldFiles,
+    exportOrders,
     getBaseDirectory,
+    processOrdersFile,
     resolveAutomationWorkbookPath,
     sendSuccessHealthcheck,
 )
-from logger import setupLogger
-from dwelling_blocks import (
-    VIEW_FILTERS,
-    DwellingBlocksClient,
-    assignment_to_erp_row,
-    enrich_assignment_with_detail,
-    load_credentials,
-    load_erp_columns,
-)
-
-load_dotenv(getBaseDirectory() / ".env")
+from logger import resolveLogDirectory, setupLogger
+from dwelling_blocks import VIEW_FILTERS
 
 logger = setupLogger()
 
@@ -103,41 +93,6 @@ def log_service_error(message: str) -> None:
         logger.error(message)
 
 
-def pull_erp_rows(
-    *,
-    view: str = "in-progress",
-    page_size: int = DEFAULT_PAGE_SIZE,
-    max_results: int | None = None,
-) -> list[dict[str, str]]:
-    """Pull Dwelling Blocks assignments and map them to ERP column rows."""
-    columns = load_erp_columns()
-    client_id, client_secret = load_credentials()
-    client = DwellingBlocksClient(client_id, client_secret)
-
-    logger.info("Authenticating to Dwelling Blocks...")
-    client.get_access_token()
-    logger.info("Access token acquired.")
-
-    filters = VIEW_FILTERS[view]
-    logger.info(
-        "Pulling assignments via POST /vendors/orders/search "
-        "(view=%s, page_size=%s)...",
-        view,
-        page_size,
-    )
-    orders = list(
-        client.iter_vendor_orders(
-            page_size=page_size,
-            max_results=max_results,
-            use_search=True,
-            filters=filters,
-        )
-    )
-    logger.info("Enriching %s assignment(s) with contacts/properties/transfers...", len(orders))
-    enriched = [enrich_assignment_with_detail(client, item) for item in orders]
-    return [assignment_to_erp_row(order, columns) for order in enriched]
-
-
 def run_once(
     *,
     view: str = "in-progress",
@@ -147,42 +102,45 @@ def run_once(
     """Run a single Dwelling Blocks ingest cycle."""
     logger.info("Starting Dwelling Blocks order ingest script...")
 
-    for directory_name in ("logs", "archive", "exports"):
-        directory_path = os.path.join(getBaseDirectory(), directory_name)
+    for directory_path in (
+        resolveLogDirectory(),
+        os.path.join(getBaseDirectory(), "archive"),
+        os.path.join(getBaseDirectory(), "exports"),
+    ):
         os.makedirs(directory_path, exist_ok=True)
         logger.info(f"Ensured directory exists: {directory_path}")
 
-    destination_file_path = resolveAutomationWorkbookPath()
-    logger.info(f"Resolved automation workbook path: {destination_file_path}")
-    backup_destination_file = backupAutomationWorkbook(destination_file_path)
+    destinationFilePath = resolveAutomationWorkbookPath()
+    logger.info(f"Resolved automation workbook path: {destinationFilePath}")
+    backupDestinationFile = backupAutomationWorkbook(destinationFilePath)
 
-    erp_rows = pull_erp_rows(
+    orders = exportOrders(
         view=view,
         page_size=page_size,
         max_results=max_results,
     )
-    logger.info("Mapped %s ERP row(s) from Dwelling Blocks", len(erp_rows))
+    logger.info("Mapped %s ERP row(s) from Dwelling Blocks", len(orders))
 
-    new_orders_count, added_loan_numbers = appendErpRows(
-        erp_rows,
-        destination_file_path,
+    newOrdersCount, addedLoanNumbers = processOrdersFile(
+        orders,
+        destinationFilePath,
     )
-    if added_loan_numbers:
+    if addedLoanNumbers:
         logger.info(
             "Added %s new orders to destination workbook for loan numbers: %s",
-            new_orders_count,
-            ", ".join(str(loan_number) for loan_number in added_loan_numbers),
+            newOrdersCount,
+            ", ".join(str(loan_number) for loan_number in addedLoanNumbers),
         )
     else:
         logger.info("Added 0 new orders to destination workbook")
 
     if (
-        new_orders_count == 0
-        and backup_destination_file
-        and os.path.exists(backup_destination_file)
+        newOrdersCount == 0
+        and backupDestinationFile
+        and os.path.exists(backupDestinationFile)
     ):
-        os.remove(backup_destination_file)
-        logger.info("Removed backup file: %s", backup_destination_file)
+        os.remove(backupDestinationFile)
+        logger.info("Removed backup file: %s", backupDestinationFile)
 
     cleanupOldFiles()
     sendSuccessHealthcheck()
@@ -222,8 +180,8 @@ def build_python_service_class():
     _, win32service, win32serviceutil = import_pywin32_modules()
 
     class PythonService(win32serviceutil.ServiceFramework):
-        _svc_name_ = "DEADwellingBlocksOrderIngest"
-        _svc_display_name_ = "DEA Dwelling Blocks Order Ingest"
+        _svc_name_ = "UWMOrderIngest"
+        _svc_display_name_ = "UWM Order Ingest"
         _svc_description_ = (
             "Pulls Dwelling Blocks assignments into ERP PDF Automation.xlsx "
             "on a recurring interval."
@@ -240,14 +198,14 @@ def build_python_service_class():
         def SvcDoRun(self):
             try:
                 self.ReportServiceStatus(win32service.SERVICE_RUNNING)
-                log_service_info("DEA Dwelling Blocks Order Ingest service started.")
+                log_service_info("UWM Order Ingest service started.")
                 run_main_loop(stop_event=self.stop_event)
             except Exception:
-                log_service_error("DEA Dwelling Blocks Order Ingest service runtime failed.")
+                log_service_error("UWM Order Ingest service runtime failed.")
                 logger.exception("Service runtime failed")
                 raise
             finally:
-                log_service_info("DEA Dwelling Blocks Order Ingest service stopped.")
+                log_service_info("UWM Order Ingest service stopped.")
 
     return PythonService
 
@@ -263,7 +221,7 @@ def run_service_command(service_command: str) -> int:
 def parse_args(argv: list[str]):
     """Parse CLI options and optional Windows service management commands."""
     parser = argparse.ArgumentParser(
-        description="DEA Dwelling Blocks Order Ingest host."
+        description="UWM Order Ingest host."
     )
     parser.add_argument(
         "--once",

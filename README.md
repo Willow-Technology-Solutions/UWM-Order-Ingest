@@ -1,65 +1,80 @@
-# Dwelling Blocks order ingest
+# UWM Order Ingest
 
-This script pulls vendor assignments from the Dwelling Blocks Vendor API and appends new rows to the ERP PDF Automation workbook. It skips loan numbers that already exist for the configured company in GSG Connect.
+Automated tool to ingest vendor assignments from the Dwelling Blocks Vendor API into the ERP PDF Automation workbook.
+
+## What it does
+
+- Authenticates to the Dwelling Blocks Vendor API using credentials from the `.env` file.
+- Pulls in-progress assignments and skips order dates older than the configured lookback.
+- Creates a timestamped backup of `ERP PDF Automation.xlsx`.
+- Appends new rows to `ERP PDF Automation.xlsx`, skipping loan numbers already stored for the company in GSG Connect.
+
+## Requirements
+
+- Python 3.10 or newer
+- UV package manager
 
 ## Setup
 
-Python 3.10 or newer is required. From this directory:
+1. Create a `.env` file in the project root:
 
-```bash
-uv sync
-cp .env.example .env
-```
+   ```
+   DWELLING_BLOCKS_CLIENT_ID=your-client-id
+   DWELLING_BLOCKS_CLIENT_SECRET=your-client-secret
 
-Fill in `.env` using the variables in [Configuration](#configuration). Place `ERP PDF Automation.xlsx` in this directory, or set `ERP_PDF_AUTOMATION_XLSX_PATH` to its full path.
+   ERP_PDF_AUTOMATION_XLSX_PATH=
 
-`main.py` loads `.env` on import and exits if the file is missing. That includes `--help`.
+   GSG_CONNECT_BASE_URL=...
+   GSG_CONNECT_USERNAME=...
+   GSG_CONNECT_PASSWORD=...
+   COMPANY_ID=...
 
-## Windows build and release
+   LOGGING_LOCATION=
+   SENTRY_DSN=optional-dsn
+   SCRIPT_ENVIRONMENT=production
+   SCRIPT_EXEC_INTERVAL_SECONDS=300
 
-GitHub Actions builds a Windows `--onedir` executable on pushes to `main`, pull requests, and manual runs. Download the `UWMOrderIngest-Windows` artifact and extract `UWMOrderIngest-Windows.zip`. Keep the entire `UWMOrderIngest` folder together. A `v*` tag also publishes that zip as a GitHub release.
+   HEALTHCHECK_IO_URL=
+   DEFAULT_PAGE_SIZE=100
+   FILE_CLEANUP_DAYS_THRESHOLD=7
+   HTTP_TIMEOUT=60
+   DNS_SERVER=
+   CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK=6
+   ```
 
-Before running the executable, copy `.env.example` to `UWMOrderIngest/.env` and fill in the runtime settings. Place `ERP PDF Automation.xlsx` beside `UWMOrderIngest.exe` or set `ERP_PDF_AUTOMATION_XLSX_PATH` to its path. Neither the workbook nor `.env` is included in GitHub builds or releases. GitHub Actions does not need the Dwelling Blocks or GSG Connect credentials to package the app; keep them on the machine that runs it.
+2. Install dependencies:
 
-Run `UWMOrderIngest.exe --once` for one cycle, or use the service commands below with `UWMOrderIngest.exe` in place of `python main.py`.
+   ```bash
+   uv sync
+   ```
 
-## Run one cycle
+3. Place `ERP PDF Automation.xlsx` in this directory, or set `ERP_PDF_AUTOMATION_XLSX_PATH` to its full path.
 
-```bash
-uv run python main.py --once
-```
+Leave `LOGGING_LOCATION` blank to write `log.txt` under `logs/` in this directory. `CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK` is how many months of order dates to keep. The default is 6.
 
-The command authenticates, pulls the in-progress view, writes new rows into the workbook, and exits. It saves a timestamped copy of the workbook under `archive/` before the write. If no new rows are added, it deletes that backup.
+If `GSG_CONNECT_BASE_URL`, `GSG_CONNECT_USERNAME`, `GSG_CONNECT_PASSWORD`, or `COMPANY_ID` is empty, the script still pulls assignments and appends no rows.
 
-Stdout and `logs/log.txt` both receive the log.
+## How to use
 
-Limit the pull while testing:
-
-```bash
-uv run python main.py --once --max 10
-```
-
-Flags:
-
-- `--view in-progress` pulls accepted assignments with no report uploaded, or with an open revision due. This is the default.
-- `--view all` pulls every assignment the search endpoint returns.
-- `--page-size 100` sets how many assignments are requested per page. The default comes from `DEFAULT_PAGE_SIZE`.
-- `--max 10` stops after that many assignments.
-- `--print-automation-workbook-path` prints the workbook path and exits.
-
-## Run on a loop
+Run the script on a loop:
 
 ```bash
 uv run python main.py
 ```
 
-The loop repeats until you stop the process. It waits `SCRIPT_EXEC_INTERVAL_SECONDS` between cycle starts. The default wait is 300 seconds, and time already spent in a cycle counts toward that wait.
+The loop waits `SCRIPT_EXEC_INTERVAL_SECONDS` between cycle starts. The default is 300 seconds. Time spent in a cycle counts toward that wait.
 
-On Windows, starting `main.py` with no arguments tries to run as the installed service. Use `--once` or `--service` there.
+Run one cycle and exit:
+
+```bash
+uv run python main.py --once
+```
+
+`--max 10` stops after that many assignments. `--view all` pulls every assignment the search returns. `--view in-progress` is the default. `--print-automation-workbook-path` prints the workbook path and exits.
 
 ## Windows service
 
-Install `pywin32`, then:
+On Windows, install pywin32, then:
 
 ```bash
 uv run python main.py --service install
@@ -69,24 +84,10 @@ uv run python main.py --service restart
 uv run python main.py --service remove
 ```
 
-The service name is `DEADwellingBlocksOrderIngest`.
+The service name is `UWMOrderIngest`. Starting `main.py` with no arguments on Windows tries to run as the installed service. Use `--once` or `--service` there.
 
-## Configuration
+## Building the executable
 
-`DWELLING_BLOCKS_CLIENT_ID` and `DWELLING_BLOCKS_CLIENT_SECRET` authenticate to `https://api.dwellingblocks.com`.
-
-`ERP_PDF_AUTOMATION_XLSX_PATH` is the workbook that receives new rows. If that path is unset or the file is missing, the script looks for `ERP PDF Automation.xlsx` in this directory.
-
-`GSG_CONNECT_BASE_URL`, `GSG_CONNECT_USERNAME`, `GSG_CONNECT_PASSWORD`, and `COMPANY_ID` identify past orders. The script uses them to skip loan numbers already stored for that company. If any of them is missing, it pulls assignments and appends nothing.
-
-`SCRIPT_EXEC_INTERVAL_SECONDS` is the wait between loop cycles. The default is 300.
-
-`DEFAULT_PAGE_SIZE` is the number of assignments requested per API page. The default is 100.
-
-`FILE_CLEANUP_DAYS_THRESHOLD` is how many days files in `archive/` and `exports/` are kept. The default is 7.
-
-`HTTP_TIMEOUT` is the timeout in seconds for GSG Connect requests. The default is 60.
-
-`HEALTHCHECK_IO_URL` receives a GET after a successful cycle. Leave it blank to skip the ping.
-
-`SENTRY_DSN` turns on Sentry when `sentry-sdk` is installed. Leave it blank to skip error reporting. `SCRIPT_ENVIRONMENT` is the Sentry environment name. The default is production.
+```bash
+uv run --group build pyinstaller --onedir --name "UWMOrderIngest" main.py
+```

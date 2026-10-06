@@ -7,14 +7,18 @@ the Encompass Project helpers (style inheritance + table resize).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import copy
 from datetime import date, datetime
 from pathlib import Path
 from shutil import copy2, move
 from zoneinfo import ZoneInfo
+import calendar
+import ipaddress
 import json
 import os
 import re
+import socket
 import sys
 import time
 from typing import Any
@@ -26,8 +30,6 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from logger import setupLogger
-
-logger = setupLogger()
 
 
 def getBaseDirectory() -> Path:
@@ -44,40 +46,144 @@ bundledEnvPath = Path(__file__).resolve().parent / ".env"
 scriptEnvPath = baseDirPath / ".env"
 
 
-def loadEnvironmentFile() -> None:
-    """Load the runtime `.env`, falling back to the bundled copy when needed."""
+def loadEnvironmentFile() -> tuple[Path, Exception | None]:
+    """Load the runtime `.env`, falling back to the bundled copy when needed.
+
+    Returns the path that was loaded, and any error from copying a bundled file.
+    Exits when no `.env` file exists.
+    """
     if scriptEnvPath.exists():
         load_dotenv(scriptEnvPath)
-        logger.info(f"Loaded environment variables from {scriptEnvPath}")
-        return
+        return scriptEnvPath, None
 
     if bundledEnvPath.exists():
         load_dotenv(bundledEnvPath)
-        logger.info(f"Loaded environment variables from {bundledEnvPath}")
         try:
             copy2(bundledEnvPath, scriptEnvPath)
-            logger.info(f"Copied bundled .env to {scriptEnvPath} for future use")
         except Exception as error:
-            logger.error(f"Failed to copy bundled .env to {scriptEnvPath}: {error}")
-        return
+            return bundledEnvPath, error
+        return bundledEnvPath, None
 
-    logger.error(
+    sys.stderr.write(
         f"The .env file was not found at {scriptEnvPath} or bundled location "
-        f"{bundledEnvPath}. Please create it and try again."
+        f"{bundledEnvPath}. Please create it and try again.\n"
     )
     sys.exit(1)
 
 
-loadEnvironmentFile()
+_loadedEnvPath, _bundledCopyError = loadEnvironmentFile()
+logger = setupLogger()
+logger.info(f"Base directory resolved to: {baseDirPath}")
+logger.info(f"Loaded environment variables from {_loadedEnvPath}")
+if _bundledCopyError is not None:
+    logger.error(
+        f"Failed to copy bundled .env to {scriptEnvPath}: {_bundledCopyError}"
+    )
 
 ERP_PDF_AUTOMATION_XLSX_PATH = os.getenv("ERP_PDF_AUTOMATION_XLSX_PATH")
 GSG_CONNECT_BASE_URL = os.getenv("GSG_CONNECT_BASE_URL")
 GSG_CONNECT_USERNAME = os.getenv("GSG_CONNECT_USERNAME")
 GSG_CONNECT_PASSWORD = os.getenv("GSG_CONNECT_PASSWORD")
 COMPANY_ID = (os.getenv("COMPANY_ID") or "").strip()
-FILE_CLEANUP_DAYS_THRESHOLD = int(os.getenv("FILE_CLEANUP_DAYS_THRESHOLD", "7"))
-HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "60"))
+FILE_CLEANUP_DAYS_THRESHOLD = int(os.getenv("FILE_CLEANUP_DAYS_THRESHOLD") or "7")
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT") or "60")
+DNS_SERVER = (os.getenv("DNS_SERVER") or "").strip() or None
+CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK = int(
+    os.getenv("CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK") or "6"
+)
 ERP_SHEET_NAME = "ERP"
+
+
+def _isIpAddressLiteral(host: str | bytes) -> bool:
+    if isinstance(host, bytes):
+        try:
+            host = host.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+@contextmanager
+def _socket_getaddrinfo_replaced(replacement):
+    previous = socket.getaddrinfo
+    socket.getaddrinfo = replacement
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = previous
+
+
+def _doh_resolve_a_records(hostname: str, *, dns_server: str, system_getaddrinfo) -> list[str]:
+    """Resolve A records via Cloudflare-style JSON DoH (used by 1.1.1.1)."""
+    with _socket_getaddrinfo_replaced(system_getaddrinfo):
+        try:
+            response = requests.get(
+                f"https://{dns_server}/dns-query",
+                params={"name": hostname, "type": "A"},
+                headers={
+                    "Accept": "application/dns-json",
+                    "Host": "cloudflare-dns.com",
+                },
+                timeout=HTTP_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as error:
+            logger.warning(
+                f"DNS override lookup failed for {hostname} using {dns_server}: {error}"
+            )
+            return []
+    answers = payload.get("Answer", [])
+    return [
+        item["data"]
+        for item in answers
+        if item.get("type") == 1 and item.get("data")
+    ]
+
+
+def _pinned_getaddrinfo_factory(*, dns_server: str, system_getaddrinfo):
+    def pinned(host, port, family=0, type=0, proto=0, flags=0):
+        if not host:
+            return system_getaddrinfo(host, port, family, type, proto, flags)
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        if _isIpAddressLiteral(name):
+            return system_getaddrinfo(host, port, family, type, proto, flags)
+        ips = _doh_resolve_a_records(
+            name, dns_server=dns_server, system_getaddrinfo=system_getaddrinfo
+        )
+        if ips:
+            sock_type = type or socket.SOCK_STREAM
+            proto_val = proto or socket.IPPROTO_TCP
+            return [(socket.AF_INET, sock_type, proto_val, "", (ip, port)) for ip in ips]
+        return system_getaddrinfo(host, port, family, type, proto, flags)
+
+    return pinned
+
+
+class DnsPinnedSession(requests.Session):
+    """Session that resolves names through DNS-over-HTTPS when dns_server is set."""
+
+    def __init__(self, *, dns_server: str):
+        super().__init__()
+        self.trust_env = False
+        self._system_getaddrinfo = socket.getaddrinfo
+        self._pinned = _pinned_getaddrinfo_factory(
+            dns_server=dns_server, system_getaddrinfo=self._system_getaddrinfo
+        )
+
+    def request(self, method, url, **kwargs):
+        with _socket_getaddrinfo_replaced(self._pinned):
+            return super().request(method, url, **kwargs)
+
+
+def _createDnsPinnedSession(*, dns_server: str | None = None) -> requests.Session:
+    if dns_server:
+        return DnsPinnedSession(dns_server=dns_server)
+    return requests.Session()
 
 # Columns that must stay blank in new Dwelling Blocks rows.
 INTENTIONALLY_BLANK_COLUMNS = {
@@ -156,7 +262,8 @@ def sendSuccessHealthcheck() -> None:
         return
 
     try:
-        response = requests.get(healthcheck_url, timeout=HTTP_TIMEOUT)
+        session = _createDnsPinnedSession(dns_server=DNS_SERVER)
+        response = session.get(healthcheck_url, timeout=HTTP_TIMEOUT)
         if response.status_code == 200:
             logger.info("Successfully sent ping to Healthcheck.io")
         else:
@@ -202,17 +309,64 @@ def cleanupOldFiles(days_threshold: int = FILE_CLEANUP_DAYS_THRESHOLD) -> None:
                     logger.error(f"Failed to delete old file {file_path}: {e}")
 
 
-def appendErpRows(
+def exportOrders(
+    *,
+    view: str = "in-progress",
+    page_size: int = 100,
+    max_results: int | None = None,
+) -> list[dict[str, str]]:
+    """Pull Dwelling Blocks assignments and map them to ERP column rows."""
+    from dwelling_blocks import (
+        VIEW_FILTERS,
+        DwellingBlocksClient,
+        assignmentToErpRow,
+        enrichAssignmentWithDetail,
+        loadCredentials,
+        loadErpColumns,
+    )
+
+    columns = loadErpColumns()
+    client_id, client_secret = loadCredentials()
+    client = DwellingBlocksClient(client_id, client_secret)
+
+    logger.info("Authenticating to Dwelling Blocks...")
+    client.getAccessToken()
+    logger.info("Access token acquired.")
+
+    filters = VIEW_FILTERS[view]
+    logger.info(
+        "Pulling assignments via POST /vendors/orders/search "
+        "(view=%s, page_size=%s)...",
+        view,
+        page_size,
+    )
+    orders = list(
+        client.iterVendorOrders(
+            page_size=page_size,
+            max_results=max_results,
+            use_search=True,
+            filters=filters,
+        )
+    )
+    orders = filterOrdersByLookback(orders)
+    logger.info(
+        "Enriching %s assignment(s) with contacts/properties/transfers...",
+        len(orders),
+    )
+    enriched = [enrichAssignmentWithDetail(client, item) for item in orders]
+    return [assignmentToErpRow(order, columns) for order in enriched]
+
+
+def processOrdersFile(
     rows: list[dict[str, Any]], output_file: str | Path
 ) -> tuple[int, list[Any]]:
     """
-    Append new ERP rows to the automation workbook, matching existing cell formatting.
+    Append exported ERP rows to the automation workbook, matching existing cell formatting.
 
-    Skips loans already present in GSG Connect (get_orders.asp) for COMPANY_ID,
-    using the same (Loan_Number, Company_ID) past-orders dedupe as Encompass.
+    Skips loans already present in GSG Connect for COMPANY_ID.
 
     Returns:
-        tuple[int, list]: Number of rows added and their loan numbers
+        tuple[int, list]: Number of new orders added and their loan numbers
     """
     output_file = Path(output_file)
     if not output_file.exists():
@@ -373,7 +527,7 @@ def _authenticateToAsp(
         return None
 
     resolved_login_url = f"{base_url}/processlogin.asp"
-    client = requests.Session()
+    client = _createDnsPinnedSession(dns_server=DNS_SERVER)
     login_data = {
         "username": username,
         "userpassword": password,
@@ -513,6 +667,55 @@ def _normalizeNumericValue(value: Any) -> int | float | None | Any:
     if numeric_value.is_integer():
         return int(numeric_value)
     return numeric_value
+
+
+def _subtractMonths(value: datetime, months: int) -> datetime:
+    """Move a datetime back by calendar months, clamping the day when needed."""
+    month_index = value.year * 12 + (value.month - 1) - months
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _lookbackCutoff(months: int) -> datetime:
+    """Midnight Eastern on the oldest Order Date still inside the lookback."""
+    today_eastern = datetime.now(LOCAL_TIMEZONE).replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    return _subtractMonths(today_eastern, months)
+
+
+def orderDateWithinLookback(order_date: Any, months: int | None = None) -> bool:
+    """Return True when Order Date falls on or after the lookback cutoff."""
+    lookback_months = (
+        CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK if months is None else months
+    )
+    parsed = _normalizeDateValue(order_date)
+    if not isinstance(parsed, datetime):
+        return False
+    order_day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+    return order_day >= _lookbackCutoff(lookback_months)
+
+
+def filterOrdersByLookback(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep assignments whose createdOn Order Date is inside the lookback window."""
+    months = CURRENT_ORDERS_ORDER_DATE_MONTH_LOOKBACK
+    cutoff = _lookbackCutoff(months)
+    kept = [
+        order
+        for order in orders
+        if orderDateWithinLookback(order.get("createdOn"), months)
+    ]
+    logger.info(
+        "Current Orders: kept %s of %s rows with Order Date on or after %s "
+        "(%s-month lookback)",
+        len(kept),
+        len(orders),
+        cutoff.date(),
+        months,
+    )
+    return kept
 
 
 def _to_local_naive(value: datetime) -> datetime:
