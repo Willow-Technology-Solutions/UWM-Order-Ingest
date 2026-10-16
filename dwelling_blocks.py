@@ -22,7 +22,12 @@ from typing import Any, Iterator
 
 import requests
 
-from helpers import DNS_SERVER, _createDnsPinnedSession
+from helpers import (
+    DNS_SERVER,
+    _createDnsPinnedSession,
+    _normalizeCalendarDateValue,
+    _normalizeDateValue,
+)
 
 API_BASE = "https://api.dwellingblocks.com"
 DEFAULT_PAGE_SIZE = 100
@@ -632,10 +637,11 @@ def assignmentToErpRow(
         "Access Contact's Name": item.get("accessContactName"),
         "Access Contact's Phone Number": item.get("accessContactPhone"),
         "Access Contact's Email Address": item.get("accessContactEmail"),
-        "Order Date": item.get("createdOn"),
+        # Dwelling Blocks timestamps are UTC; store America/New_York on the sheet.
+        "Order Date": _normalizeDateValue(item.get("createdOn")),
         "Report Uploaded": None,  # intentionally blank
         "Appointment Date": None,  # intentionally blank
-        "Due Date": item.get("dueDate"),
+        "Due Date": _normalizeCalendarDateValue(item.get("dueDate")),
     }
 
     return {column: _cell(values.get(column)) for column in columns}
