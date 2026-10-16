@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import copy
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from shutil import copy2, move
 from zoneinfo import ZoneInfo
@@ -201,6 +201,13 @@ AUTOMATION_DATE_COLUMNS = {
     "Due Date",
     "Report Uploaded",
     "Appointment Date",
+}
+# Calendar-only columns. Dwelling Blocks encodes due dates as end-of-day Eastern
+# in UTC (e.g. 2026-10-15T03:59:59.999Z means due 10/14). Keep midnight on the
+# Eastern calendar date so Excel m/d/yy h:mm does not round 11:59:59.999 PM up
+# to the next day.
+AUTOMATION_CALENDAR_DATE_COLUMNS = {
+    "Due Date",
 }
 AUTOMATION_PHONE_COLUMNS = {
     "Borrower's Phone Number",
@@ -743,6 +750,34 @@ def _to_local_naive(value: datetime) -> datetime:
     return value.astimezone(LOCAL_TIMEZONE).replace(tzinfo=None)
 
 
+def _assumeUtcIfNaiveApiTimestamp(parsed: datetime, original_text: str) -> datetime:
+    """Treat timezone-naive API timestamps as UTC.
+
+    Dwelling Blocks sends ISO datetimes in UTC (`Z` or `+00:00`). If the
+    `Z` is missing but the value still uses the API `T` separator, keep
+    the same UTC meaning instead of reading the clock as Eastern.
+    Date-only values (`YYYY-MM-DD`) and already-local strings stay naive.
+    """
+    if parsed.tzinfo is not None:
+        return parsed
+    if "T" in original_text:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _normalizeCalendarDateValue(value: Any) -> datetime | None | Any:
+    """Parse a due-date-like value as a calendar day in America/New_York.
+
+    Dwelling Blocks stores due dates as the last instant of the Eastern day in
+    UTC. Convert to Eastern, then drop the time so the workbook date matches
+    the client site instead of rounding to the next UTC calendar day.
+    """
+    parsed = _normalizeDateValue(value)
+    if not isinstance(parsed, datetime):
+        return parsed
+    return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def _normalizeDateValue(value: Any) -> datetime | None | Any:
     """Parse date-like values, preserving time (Excel format m/d/yy h:mm)."""
     if value is None:
@@ -756,11 +791,11 @@ def _normalizeDateValue(value: Any) -> datetime | None | Any:
     if not text or text.upper() in {"N/A", "NOT SET", "NONE"}:
         return None
 
-    # ISO-8601 with optional fractional seconds / Z
+    # ISO-8601 with optional fractional seconds / Z. API timestamps are UTC.
     iso_text = text.replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(iso_text)
-        return _to_local_naive(parsed)
+        return _to_local_naive(_assumeUtcIfNaiveApiTimestamp(parsed, text))
     except ValueError:
         pass
 
@@ -832,6 +867,9 @@ def _coerceAutomationCellValue(header: str, value: Any) -> Any:
 
     if header in AUTOMATION_NUMERIC_COLUMNS:
         return _normalizeNumericValue(value)
+
+    if header in AUTOMATION_CALENDAR_DATE_COLUMNS:
+        return _normalizeCalendarDateValue(value)
 
     if header in AUTOMATION_DATE_COLUMNS:
         return _normalizeDateValue(value)
