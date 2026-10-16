@@ -202,6 +202,13 @@ AUTOMATION_DATE_COLUMNS = {
     "Report Uploaded",
     "Appointment Date",
 }
+# Calendar-only columns. Dwelling Blocks encodes due dates as end-of-day Eastern
+# in UTC (e.g. 2026-10-15T03:59:59.999Z means due 10/14). Keep midnight on the
+# Eastern calendar date so Excel m/d/yy h:mm does not round 11:59:59.999 PM up
+# to the next day.
+AUTOMATION_CALENDAR_DATE_COLUMNS = {
+    "Due Date",
+}
 AUTOMATION_PHONE_COLUMNS = {
     "Borrower's Phone Number",
     "Co-Borrower's Phone Number",
@@ -743,6 +750,19 @@ def _to_local_naive(value: datetime) -> datetime:
     return value.astimezone(LOCAL_TIMEZONE).replace(tzinfo=None)
 
 
+def _normalizeCalendarDateValue(value: Any) -> datetime | None | Any:
+    """Parse a due-date-like value as a calendar day in America/New_York.
+
+    Dwelling Blocks stores due dates as the last instant of the Eastern day in
+    UTC. Convert to Eastern, then drop the time so the workbook date matches
+    the client site instead of rounding to the next UTC calendar day.
+    """
+    parsed = _normalizeDateValue(value)
+    if not isinstance(parsed, datetime):
+        return parsed
+    return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def _normalizeDateValue(value: Any) -> datetime | None | Any:
     """Parse date-like values, preserving time (Excel format m/d/yy h:mm)."""
     if value is None:
@@ -832,6 +852,9 @@ def _coerceAutomationCellValue(header: str, value: Any) -> Any:
 
     if header in AUTOMATION_NUMERIC_COLUMNS:
         return _normalizeNumericValue(value)
+
+    if header in AUTOMATION_CALENDAR_DATE_COLUMNS:
+        return _normalizeCalendarDateValue(value)
 
     if header in AUTOMATION_DATE_COLUMNS:
         return _normalizeDateValue(value)
